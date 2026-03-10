@@ -1,8 +1,16 @@
 # Orbination AI Desktop Vision & Control
 
-A native Windows MCP (Model Context Protocol) server that gives AI assistants full desktop automation capabilities — see the screen, read UI elements, click buttons, type text, and interact with any application.
+[![Release](https://img.shields.io/github/v/release/amichail-1/Orbination-AI-Desktop-Vision-Control?style=flat-square)](https://github.com/amichail-1/Orbination-AI-Desktop-Vision-Control/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+[![.NET 8](https://img.shields.io/badge/.NET-8.0-purple?style=flat-square)](https://dotnet.microsoft.com/download/dotnet/8.0)
+[![MCP](https://img.shields.io/badge/MCP-Compatible-green?style=flat-square)](https://modelcontextprotocol.io)
+[![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
+
+**Give AI assistants eyes and hands.** A native Windows MCP server that lets AI see the screen, read UI elements, click buttons, type text, and control any application.
 
 Built for [Claude Code](https://claude.ai/code) by [Orbination](https://orbination.com).
+
+> AI coding assistants are blind. They generate code but can never see the result. They can't compare a design mockup to a running app. They can't click through a UI to test it. **This server fixes that.**
 
 ## What It Does
 
@@ -169,6 +177,38 @@ DesktopControlMcp/
     ├── KeyboardTools.cs          # Keyboard control
     └── ScreenTools.cs            # Screenshots
 ```
+
+## Examples
+
+See the [`examples/`](examples/) folder for real-world workflows:
+
+- **[Visual UI Comparison](examples/visual-ui-comparison.md)** — AI opens an HTML design and a Flutter app side by side, clicks through both, and identifies every visual difference
+- **[Automated UI Testing](examples/automated-testing.md)** — AI tests login flows, form validation, and navigation by clicking through any app — no test scripts needed
+- **[Multi-App Workflows](examples/multi-app-workflow.md)** — AI orchestrates across browser, code editor, database tool, and desktop apps in a single workflow
+
+## Quick Install
+
+**Option A: Download pre-built binary**
+
+1. Download from [Releases](https://github.com/amichail-1/Orbination-AI-Desktop-Vision-Control/releases)
+2. Extract the zip
+3. Add to Claude Code:
+```bash
+claude mcp add desktop-control -- "C:\path\to\DesktopControlMcp.exe"
+```
+
+**Option B: Build from source**
+
+```bash
+git clone https://github.com/amichail-1/Orbination-AI-Desktop-Vision-Control.git
+cd Orbination-AI-Desktop-Vision-Control/DesktopControlMcp
+dotnet build -c Release
+claude mcp add desktop-control -- "bin\Release\net8.0-windows\DesktopControlMcp.exe"
+```
+
+## Contributing
+
+Contributions welcome. Open an issue or submit a PR.
 
 ## License
 
