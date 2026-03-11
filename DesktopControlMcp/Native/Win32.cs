@@ -83,6 +83,21 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern nint SendMessage(nint hWnd, uint Msg, nint wParam, nint lParam);
 
+    [DllImport("user32.dll")]
+    public static extern bool PrintWindow(nint hWnd, nint hdcBlt, uint nFlags);
+
+    [DllImport("user32.dll")]
+    public static extern nint GetWindowDC(nint hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern int ReleaseDC(nint hWnd, nint hdc);
+
+    [DllImport("gdi32.dll")]
+    public static extern bool BitBlt(nint hdcDest, int xDest, int yDest, int width, int height, nint hdcSrc, int xSrc, int ySrc, uint rop);
+
+    public const uint PW_RENDERFULLCONTENT = 0x00000002;
+    public const uint SRCCOPY = 0x00CC0020;
+
     public const byte VK_MENU = 0x12; // Alt key
     public const uint KEYEVENTF_KEYUP_FLAG = 0x02;
     public const uint SPI_SETFOREGROUNDLOCKTIMEOUT = 0x2001;

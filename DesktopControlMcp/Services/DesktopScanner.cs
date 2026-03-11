@@ -40,6 +40,8 @@ public static class DesktopScanner
         scene.VirtualDesktop = GetVirtualDesktop();
         scene.Windows = GetWindows();
         scene.TaskbarElements = GetTaskbarElements();
+        AnalyzeWindowOcclusion(scene);
+        scene.DesktopRegions = FindDesktopRegions(scene);
         scene.Summary = BuildSummary(scene);
         return scene;
     }
@@ -50,6 +52,8 @@ public static class DesktopScanner
         scene.Screens = GetScreens();
         scene.VirtualDesktop = GetVirtualDesktop();
         scene.Windows = EnumerateWindows(includeElements: false);
+        AnalyzeWindowOcclusion(scene);
+        scene.DesktopRegions = FindDesktopRegions(scene);
         scene.Summary = BuildSummary(scene);
         return scene;
     }
@@ -320,6 +324,184 @@ public static class DesktopScanner
         if (aid == "WidgetsButton") return "widgets";
         if (name == "Show Desktop") return "show-desktop";
         return null;
+    }
+
+    // ─── Window Occlusion Analysis ──────────────────────────────────────────────
+
+    private const int CellSize = 24; // grid cell size in pixels
+    private const double OcclusionThreshold = 0.15; // <15% visible = occluded
+
+    /// <summary>
+    /// Grid-based occlusion detection: determines which fraction of each window is
+    /// actually visible (not covered by windows in front). Windows enumerated by
+    /// EnumWindows come in z-order (front to back), so lower ZOrder = more in front.
+    /// </summary>
+    public static void AnalyzeWindowOcclusion(SceneData scene)
+    {
+        if (scene.Windows.Count == 0) return;
+
+        var vd = scene.VirtualDesktop;
+        int gridW = (vd.Width + CellSize - 1) / CellSize;
+        int gridH = (vd.Height + CellSize - 1) / CellSize;
+
+        // Grid tracks whether each cell is already claimed by a window in front
+        var claimed = new bool[gridW * gridH];
+
+        // Process windows in z-order (front to back = lowest ZOrder first)
+        var sorted = scene.Windows.OrderBy(w => w.ZOrder).ToList();
+
+        foreach (var win in sorted)
+        {
+            var b = win.Bounds;
+            // Convert window bounds to grid coordinates
+            int gx1 = Math.Max(0, (b.X - vd.Left) / CellSize);
+            int gy1 = Math.Max(0, (b.Y - vd.Top) / CellSize);
+            int gx2 = Math.Min(gridW, (b.X - vd.Left + b.Width + CellSize - 1) / CellSize);
+            int gy2 = Math.Min(gridH, (b.Y - vd.Top + b.Height + CellSize - 1) / CellSize);
+
+            int totalCells = 0;
+            int visibleCells = 0;
+
+            for (int gy = gy1; gy < gy2; gy++)
+            {
+                for (int gx = gx1; gx < gx2; gx++)
+                {
+                    totalCells++;
+                    int idx = gy * gridW + gx;
+                    if (!claimed[idx])
+                    {
+                        visibleCells++;
+                        claimed[idx] = true; // this cell is now covered by this window
+                    }
+                }
+            }
+
+            win.VisibleFraction = totalCells > 0 ? (double)visibleCells / totalCells : 0;
+            win.Occluded = win.VisibleFraction < OcclusionThreshold;
+        }
+    }
+
+    // ─── Desktop Region Detection ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Finds uncovered desktop regions — areas of the screen where no window is in front.
+    /// Uses the same grid approach: any cell that's on a screen but not covered by a window
+    /// is "desktop". Adjacent cells are merged into rectangular regions.
+    /// </summary>
+    public static List<DesktopRegion> FindDesktopRegions(SceneData scene)
+    {
+        var vd = scene.VirtualDesktop;
+        int gridW = (vd.Width + CellSize - 1) / CellSize;
+        int gridH = (vd.Height + CellSize - 1) / CellSize;
+
+        // Mark cells that are on a screen
+        var screenGrid = new bool[gridW * gridH];
+        foreach (var scr in scene.Screens)
+        {
+            int gx1 = Math.Max(0, (scr.X - vd.Left) / CellSize);
+            int gy1 = Math.Max(0, (scr.Y - vd.Top) / CellSize);
+            int gx2 = Math.Min(gridW, (scr.X - vd.Left + scr.Width + CellSize - 1) / CellSize);
+            int gy2 = Math.Min(gridH, (scr.Y - vd.Top + scr.Height + CellSize - 1) / CellSize);
+            for (int gy = gy1; gy < gy2; gy++)
+                for (int gx = gx1; gx < gx2; gx++)
+                    screenGrid[gy * gridW + gx] = true;
+        }
+
+        // Mark cells covered by drawable (non-occluded) windows
+        var coveredGrid = new bool[gridW * gridH];
+        foreach (var win in scene.Windows.Where(w => !w.Occluded))
+        {
+            var b = win.Bounds;
+            int gx1 = Math.Max(0, (b.X - vd.Left) / CellSize);
+            int gy1 = Math.Max(0, (b.Y - vd.Top) / CellSize);
+            int gx2 = Math.Min(gridW, (b.X - vd.Left + b.Width + CellSize - 1) / CellSize);
+            int gy2 = Math.Min(gridH, (b.Y - vd.Top + b.Height + CellSize - 1) / CellSize);
+            for (int gy = gy1; gy < gy2; gy++)
+                for (int gx = gx1; gx < gx2; gx++)
+                    coveredGrid[gy * gridW + gx] = true;
+        }
+
+        // Desktop cells = on screen AND not covered
+        var desktopGrid = new bool[gridW * gridH];
+        for (int i = 0; i < screenGrid.Length; i++)
+            desktopGrid[i] = screenGrid[i] && !coveredGrid[i];
+
+        // Extract rectangular regions using row-based run-length grouping
+        return ExtractRegions(desktopGrid, gridW, gridH, vd, scene.Screens);
+    }
+
+    private static List<DesktopRegion> ExtractRegions(bool[] grid, int gridW, int gridH,
+        VirtualDesktopInfo vd, List<ScreenInfo> screens)
+    {
+        var visited = new bool[gridW * gridH];
+        var regions = new List<DesktopRegion>();
+
+        for (int gy = 0; gy < gridH; gy++)
+        {
+            for (int gx = 0; gx < gridW; gx++)
+            {
+                int idx = gy * gridW + gx;
+                if (!grid[idx] || visited[idx]) continue;
+
+                // Flood-fill to find connected region, track bounding box
+                int minGx = gx, minGy = gy, maxGx = gx, maxGy = gy;
+                int cellCount = 0;
+                var queue = new Queue<(int x, int y)>();
+                queue.Enqueue((gx, gy));
+                visited[idx] = true;
+
+                while (queue.Count > 0)
+                {
+                    var (cx, cy) = queue.Dequeue();
+                    cellCount++;
+                    if (cx < minGx) minGx = cx;
+                    if (cy < minGy) minGy = cy;
+                    if (cx > maxGx) maxGx = cx;
+                    if (cy > maxGy) maxGy = cy;
+
+                    // 4-connected neighbors
+                    foreach (var (nx, ny) in new[] { (cx - 1, cy), (cx + 1, cy), (cx, cy - 1), (cx, cy + 1) })
+                    {
+                        if (nx < 0 || nx >= gridW || ny < 0 || ny >= gridH) continue;
+                        int ni = ny * gridW + nx;
+                        if (!grid[ni] || visited[ni]) continue;
+                        visited[ni] = true;
+                        queue.Enqueue((nx, ny));
+                    }
+                }
+
+                // Filter tiny regions (less than ~144x144 pixels = 6x6 cells = 36 cells)
+                if (cellCount < 36) continue;
+
+                int px = vd.Left + minGx * CellSize;
+                int py = vd.Top + minGy * CellSize;
+                int pw = (maxGx - minGx + 1) * CellSize;
+                int ph = (maxGy - minGy + 1) * CellSize;
+
+                // Determine which screen this region is on
+                int screenIdx = -1;
+                int centerX = px + pw / 2;
+                int centerY = py + ph / 2;
+                for (int si = 0; si < screens.Count; si++)
+                {
+                    var s = screens[si];
+                    if (centerX >= s.X && centerX < s.X + s.Width && centerY >= s.Y && centerY < s.Y + s.Height)
+                    {
+                        screenIdx = si;
+                        break;
+                    }
+                }
+
+                regions.Add(new DesktopRegion
+                {
+                    Bounds = new Bounds { X = px, Y = py, Width = pw, Height = ph },
+                    ScreenIndex = screenIdx,
+                    AreaPixels = cellCount * CellSize * CellSize,
+                });
+            }
+        }
+
+        return regions;
     }
 
     // ─── Summary ────────────────────────────────────────────────────────────────

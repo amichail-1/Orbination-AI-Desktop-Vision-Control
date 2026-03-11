@@ -1,5 +1,8 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Text;
 using System.Windows.Automation;
 using DesktopControlMcp.Native;
 using DesktopControlMcp.Services;
@@ -322,5 +325,266 @@ public sealed class CompositeTools
         NativeInput.MouseClick("left", 1);
 
         return $"Clicked menu: {parentText} > {childText}";
+    }
+
+    [McpServerTool(Name = "run_sequence"), Description(
+        "Execute multiple UI actions in a single call. Massively faster than individual tool calls. " +
+        "Each line is one action. Actions:\n" +
+        "  click \"text\"           — click element by text (UIAutomation + OCR fallback)\n" +
+        "  click x,y              — click at screen coordinates\n" +
+        "  doubleclick x,y        — double-click at coordinates\n" +
+        "  type \"text\"            — type text via keyboard\n" +
+        "  paste \"text\"           — paste via clipboard (for large/XML text)\n" +
+        "  hotkey ctrl+a          — press key combination\n" +
+        "  wait 500               — wait N milliseconds\n" +
+        "  focus \"window title\"   — focus a window\n" +
+        "  tab \"tab text\"         — select a browser tab\n" +
+        "  ocr_click \"text\"       — find text via OCR and click it (skips UIAutomation)\n" +
+        "  screenshot \"path\"      — take screenshot of focused window\n" +
+        "Example: focus \"Chrome\"\\nwait 300\\nclick \"Extras\"\\nwait 500\\nclick \"Edit Diagram\"")]
+    public static string RunSequence(
+        [Description("Actions to execute, one per line")] string actions,
+        [Description("Window to focus before starting (optional)")] string windowTitle = "")
+    {
+        var results = new StringBuilder();
+        int step = 0;
+        nint activeWindow = nint.Zero;
+
+        // Focus initial window if specified
+        if (!string.IsNullOrEmpty(windowTitle))
+        {
+            activeWindow = Win32.FindWindowByTitle(windowTitle);
+            if (activeWindow != nint.Zero)
+            {
+                Win32.FocusWindow(activeWindow);
+                Thread.Sleep(150);
+                results.AppendLine($"[0] Focused: {Win32.StripInvisibleChars(Win32.GetWindowTitle(activeWindow))}");
+            }
+            else
+            {
+                results.AppendLine($"[0] WARNING: window '{windowTitle}' not found");
+            }
+        }
+
+        var lines = actions.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+        foreach (var rawLine in lines)
+        {
+            step++;
+            var line = rawLine.Trim();
+            if (string.IsNullOrEmpty(line) || line.StartsWith("//") || line.StartsWith("#")) continue;
+
+            try
+            {
+                var result = ExecuteAction(line, ref activeWindow);
+                results.AppendLine($"[{step}] {result}");
+            }
+            catch (Exception ex)
+            {
+                results.AppendLine($"[{step}] ERROR: {ex.Message}");
+            }
+        }
+
+        results.AppendLine($"Done: {step} actions executed");
+        return results.ToString();
+    }
+
+    private static string ExecuteAction(string line, ref nint activeWindow)
+    {
+        // Parse action and argument
+        var (action, arg) = ParseAction(line);
+
+        switch (action.ToLowerInvariant())
+        {
+            case "click":
+                return DoClick(arg, activeWindow);
+
+            case "doubleclick":
+                if (TryParseCoords(arg, out int dx, out int dy))
+                {
+                    NativeInput.MoveMouse(dx, dy);
+                    Thread.Sleep(20);
+                    NativeInput.MouseClick("left", 2);
+                    return $"Double-clicked {dx},{dy}";
+                }
+                return "ERROR: doubleclick requires x,y";
+
+            case "rightclick":
+                if (TryParseCoords(arg, out int rx, out int ry))
+                {
+                    NativeInput.MoveMouse(rx, ry);
+                    Thread.Sleep(20);
+                    NativeInput.MouseClick("right", 1);
+                    return $"Right-clicked {rx},{ry}";
+                }
+                return "ERROR: rightclick requires x,y";
+
+            case "type":
+                NativeInput.TypeUnicode(StripQuotes(arg));
+                return $"Typed {StripQuotes(arg).Length} chars";
+
+            case "paste":
+                NativeInput.TypeViaClipboard(StripQuotes(arg));
+                return $"Pasted {StripQuotes(arg).Length} chars";
+
+            case "hotkey":
+                var keys = arg.Split('+', StringSplitOptions.RemoveEmptyEntries)
+                              .Select(k => k.Trim().ToLowerInvariant()).ToArray();
+                NativeInput.Hotkey(keys);
+                return $"Pressed {string.Join("+", keys)}";
+
+            case "wait":
+                int ms = int.TryParse(arg, out var parsed) ? Math.Clamp(parsed, 10, 10000) : 300;
+                Thread.Sleep(ms);
+                return $"Waited {ms}ms";
+
+            case "focus":
+                var title = StripQuotes(arg);
+                var hWnd = Win32.FindWindowByTitle(title);
+                if (hWnd == nint.Zero) return $"NOT FOUND: '{title}'";
+                Win32.FocusWindow(hWnd);
+                activeWindow = hWnd;
+                Thread.Sleep(150);
+                return $"Focused: {Win32.StripInvisibleChars(Win32.GetWindowTitle(hWnd))}";
+
+            case "tab":
+                var tabElem = UiAutomationHelper.FindElement(StripQuotes(arg));
+                if (tabElem != null)
+                {
+                    UiAutomationHelper.Select(tabElem);
+                    return $"Selected tab: {StripQuotes(arg)}";
+                }
+                return $"NOT FOUND: tab '{StripQuotes(arg)}'";
+
+            case "ocr_click":
+                return DoOcrClick(StripQuotes(arg), activeWindow);
+
+            case "screenshot":
+                return DoScreenshot(StripQuotes(arg), activeWindow);
+
+            case "scroll":
+                int amount = int.TryParse(arg, out var sa) ? sa : -3;
+                NativeInput.MouseScroll(amount);
+                return $"Scrolled {amount}";
+
+            case "select_all":
+                NativeInput.Hotkey("ctrl", "a");
+                return "Selected all";
+
+            default:
+                return $"UNKNOWN: '{action}'";
+        }
+    }
+
+    private static string DoClick(string arg, nint activeWindow)
+    {
+        // Check if it's coordinates: "123,456"
+        if (TryParseCoords(arg, out int cx, out int cy))
+        {
+            NativeInput.MoveMouse(cx, cy);
+            Thread.Sleep(20);
+            NativeInput.MouseClick("left", 1);
+            return $"Clicked {cx},{cy}";
+        }
+
+        // Text-based click: try UIAutomation first, then OCR
+        var text = StripQuotes(arg);
+        var windowTitle = activeWindow != nint.Zero ? Win32.GetWindowTitle(activeWindow) : "";
+
+        var element = UiAutomationHelper.FindElement(text, windowTitle);
+        if (element != null)
+        {
+            UiAutomationHelper.Invoke(element);
+            return $"Clicked: \"{element.Current.Name}\" (UIA)";
+        }
+
+        // OCR fallback
+        return DoOcrClick(text, activeWindow);
+    }
+
+    private static string DoOcrClick(string text, nint activeWindow)
+    {
+        // Always use foreground window for accurate coordinates
+        nint hWnd = Win32.GetForegroundWindow();
+        if (hWnd == nint.Zero)
+            hWnd = activeWindow != nint.Zero ? activeWindow : nint.Zero;
+        if (hWnd == nint.Zero) return $"NOT FOUND: '{text}' — no active window";
+
+        Win32.GetWindowRect(hWnd, out var rect);
+        int wx = rect.Left, wy = rect.Top, ww = rect.Width, wh = rect.Height;
+
+        // Clamp to reasonable size and ensure positive dimensions
+        if (ww <= 0 || wh <= 0) return $"NOT FOUND: '{text}' — invalid window rect ({wx},{wy} {ww}x{wh})";
+        ww = Math.Min(ww, 4000);
+        wh = Math.Min(wh, 3000);
+
+        using var bmp = new Bitmap(ww, wh, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.CopyFromScreen(wx, wy, 0, 0, new Size(ww, wh));
+        }
+
+        var matches = OcrService.FindText(bmp, text, "en", wx, wy);
+        if (matches.Count == 0) return $"NOT FOUND: '{text}' (OCR)";
+
+        // Score matches: exact > starts with > contains. Prefer shorter text (closer to search term).
+        var best = matches
+            .OrderBy(m => m.Text.Equals(text, StringComparison.OrdinalIgnoreCase) ? 0
+                        : m.Text.StartsWith(text, StringComparison.OrdinalIgnoreCase) ? 1
+                        : m.Text.EndsWith(text, StringComparison.OrdinalIgnoreCase) ? 1
+                        : 2)
+            .ThenBy(m => Math.Abs(m.Text.Length - text.Length))
+            .First();
+
+        NativeInput.MoveMouse(best.CenterX, best.CenterY);
+        Thread.Sleep(20);
+        NativeInput.MouseClick("left", 1);
+        return $"Clicked: \"{best.Text}\" @ {best.CenterX},{best.CenterY} (OCR)";
+    }
+
+    private static string DoScreenshot(string savePath, nint activeWindow)
+    {
+        nint hWnd = activeWindow != nint.Zero ? activeWindow : Win32.GetForegroundWindow();
+        if (hWnd == nint.Zero) return "ERROR: no active window";
+
+        Win32.GetWindowRect(hWnd, out var rect);
+        int ww = Math.Min(rect.Width, 4000), wh = Math.Min(rect.Height, 3000);
+
+        using var bmp = new Bitmap(ww, wh, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            g.CopyFromScreen(rect.Left, rect.Top, 0, 0, new Size(ww, wh));
+        }
+
+        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(savePath))!);
+        bmp.Save(savePath, ImageFormat.Png);
+        return $"Screenshot saved: {ww}x{wh} → {savePath}";
+    }
+
+    // ─── Parsing Helpers ─────────────────────────────────────────────────────────
+
+    private static (string action, string arg) ParseAction(string line)
+    {
+        // Handle quoted arguments: click "some text"
+        int firstSpace = line.IndexOf(' ');
+        if (firstSpace < 0) return (line, "");
+        return (line[..firstSpace], line[(firstSpace + 1)..].Trim());
+    }
+
+    private static string StripQuotes(string s)
+    {
+        s = s.Trim();
+        if (s.Length >= 2 && s[0] == '"' && s[^1] == '"') return s[1..^1];
+        if (s.Length >= 2 && s[0] == '\'' && s[^1] == '\'') return s[1..^1];
+        return s;
+    }
+
+    private static bool TryParseCoords(string s, out int x, out int y)
+    {
+        x = y = 0;
+        s = s.Trim();
+        var parts = s.Split(',');
+        if (parts.Length != 2) return false;
+        return int.TryParse(parts[0].Trim(), out x) && int.TryParse(parts[1].Trim(), out y);
     }
 }

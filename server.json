@@ -30,7 +30,8 @@
     "open_app", "wait_seconds",
     "mouse_move_smooth", "set_clipboard", "paste_text",
     "focus_and_hotkey", "wait_for_element", "click_menu_item",
-    "ocr_screen_region", "ocr_window", "ocr_find_text"
+    "ocr_screen_region", "ocr_window", "ocr_find_text",
+    "run_sequence", "mouse_get_position"
   ],
   "remoteEndpoints": [],
   "environmentVariables": []

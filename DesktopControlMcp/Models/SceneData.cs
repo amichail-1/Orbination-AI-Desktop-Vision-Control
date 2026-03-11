@@ -10,6 +10,7 @@ public sealed class SceneData
     public VirtualDesktopInfo VirtualDesktop { get; set; } = new();
     public List<WindowInfo> Windows { get; set; } = [];
     public List<TaskbarElement> TaskbarElements { get; set; } = [];
+    public List<DesktopRegion> DesktopRegions { get; set; } = [];
     public SceneSummary Summary { get; set; } = new();
 }
 
@@ -53,6 +54,21 @@ public sealed class WindowInfo
     public Bounds Bounds { get; set; } = new();
     public List<UiElement> Elements { get; set; } = [];
     public int ElementCount => Elements.Count;
+
+    /// <summary>Fraction of window area actually visible (0.0–1.0), considering occlusion by windows in front.</summary>
+    public double VisibleFraction { get; set; } = 1.0;
+    /// <summary>True if less than 15% of the window is visible (mostly hidden behind other windows).</summary>
+    public bool Occluded { get; set; }
+}
+
+/// <summary>A region of the screen where the desktop background is visible (no window covering it).</summary>
+public sealed class DesktopRegion
+{
+    public Bounds Bounds { get; set; } = new();
+    /// <summary>Which screen index this region is on (-1 if spanning).</summary>
+    public int ScreenIndex { get; set; } = -1;
+    /// <summary>Area in pixels.</summary>
+    public int AreaPixels { get; set; }
 }
 
 public sealed class UiElement
