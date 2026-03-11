@@ -6,7 +6,7 @@
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green?style=flat-square)](https://modelcontextprotocol.io)
 [![Windows](https://img.shields.io/badge/Platform-Windows%2010%2F11-0078D6?style=flat-square&logo=windows)](https://www.microsoft.com/windows)
 
-**Give AI assistants eyes and hands.** A native Windows MCP server that lets AI see the screen, read UI elements, click buttons, type text, and control any application.
+**Give AI assistants eyes and hands.** A native Windows MCP server that lets AI see the screen, read UI elements, click buttons, type text, and control any application — with built-in OCR, dark theme support, window occlusion detection, and batch action sequencing.
 
 Built for [Claude Code](https://claude.ai/code) by [Leia Enterprise Solutions](https://leia.gr) for the [Orbination](https://orbination.com) project.
 
@@ -16,25 +16,58 @@ Built for [Claude Code](https://claude.ai/code) by [Leia Enterprise Solutions](h
 
 This MCP server bridges the gap between AI and your desktop. Instead of working blind with just text, the AI can:
 
-- **See** — Take screenshots of any screen region across multiple monitors
+- **See** — Take screenshots, run OCR on any window (auto-enhances dark themes), detect window occlusion
 - **Read** — Detect every UI element (buttons, inputs, text, tabs, checkboxes) with exact positions via Windows UIAutomation
-- **Interact** — Click elements, type text, fill forms, toggle checkboxes, select tabs — all without fragile coordinate guessing
-- **Navigate** — Open apps, switch windows, maximize/minimize, scroll, navigate browser URLs
-- **Understand** — Scan the entire desktop to build a structured map of all windows and their contents
+- **Interact** — Click elements by text (UIAutomation + OCR fallback), navigate menus, fill forms, type and paste text
+- **Navigate** — Open apps, switch windows, focus tabs, navigate browser URLs
+- **Understand** — Scan the entire desktop: window visibility %, occlusion detection, uncovered desktop regions
+- **Batch** — Execute multi-step UI workflows in a single call with `run_sequence`
 
-## Why
+## What's New in v2.0
 
-AI coding assistants are blind. They generate code but can never see the result. They can't compare a design mockup to a running app. They can't click through a UI to test it. This server gives them eyes and hands.
+- **Window Occlusion Detection** — Grid-based analysis showing which windows are truly visible (visibility %) and which are hidden behind others
+- **Desktop Region Detection** — Flood-fill algorithm to find uncovered screen areas
+- **Shared OcrService** — Centralized OCR with automatic dark theme enhancement (invert + contrast boost) — single-pass, not two
+- **PrintWindow API** — Capture window content even when obscured by other windows
+- **`click_element` OCR Fallback** — UIAutomation first, then OCR for dark themes, web apps, iframes
+- **`run_sequence`** — Batch multiple UI actions (click, type, paste, hotkey, wait, focus, OCR click) in a single MCP call
+- **`click_menu_item`** — Navigate parent > child menus with smooth mouse movement to keep submenus open
+- **DPI Awareness** — Per-monitor DPI for correct coordinates on multi-monitor setups with mixed scaling
+- **Embedded AI Instructions** — Server sends tool usage guidelines on MCP connection, teaching AI to prefer OCR over screenshots
 
 ## Architecture
 
 ```
-Claude Code  <──MCP/stdio──>  DesktopControlMcp.exe
-                                    │
-                                    ├── Win32 API (EnumWindows, window management)
-                                    ├── UIAutomation (element detection, interaction)
-                                    ├── Native Input (mouse/keyboard simulation)
-                                    └── GDI+ (screenshots)
+AI Client (Claude Code / Claude Desktop)
+         │
+         │  MCP / stdio
+         ▼
+    ┌─────────────────────────────┐
+    │       MCP Server            │
+    │   (ServerInstructions)      │
+    └─────────┬───────────────────┘
+              │
+    ┌─────────┼──────────────────────────────────────┐
+    │         │         │          │          │       │
+    ▼         ▼         ▼          ▼          ▼       │
+ Mouse    Keyboard   Screen    Vision    Composite   │
+ Tools     Tools     Tools     Tools      Tools      │
+                       │          │          │       │
+              ┌────────┼──────────┼──────────┘       │
+              ▼        ▼          ▼                  │
+          Win32     UIAuto-    OcrService            │
+          Native    mation     (dark theme)          │
+              │        │                             │
+              ▼        ▼                             │
+         DesktopScanner    NativeInput               │
+         (occlusion,       (SendInput,               │
+          regions)          clipboard)               │
+              │               │                      │
+              └───────┬───────┘                      │
+                      ▼                              │
+               Windows OS                            │
+               (Desktop, Windows, Apps)              │
+    └────────────────────────────────────────────────┘
 ```
 
 Single native .NET 8 executable. No Python. No Node.js. No browser drivers. Direct Windows API access.
@@ -78,14 +111,14 @@ Or add it manually to your MCP config file:
 }
 ```
 
-## Tools
+## Tools (45+)
 
 ### Vision & Element Detection
 
 | Tool | Description |
 |---|---|
-| `scan_desktop` | Full desktop scan — screens, windows, UI elements, taskbar |
-| `list_windows` | List all visible windows with titles, process names, bounds |
+| `scan_desktop` | Full desktop scan — screens, windows with visibility %, UI elements, desktop regions, taskbar |
+| `list_windows` | List all visible windows with titles, process names, visibility %, occlusion status |
 | `get_window_details` | Get all UI elements in a window (filter by kind: button, input, text, etc.) |
 | `find_element` | Search for a UI element by text across all windows |
 | `read_window_text` | Extract all visible text from a window |
@@ -95,11 +128,20 @@ Or add it manually to your MCP config file:
 
 | Tool | Description |
 |---|---|
-| `click_element` | Find element by text and click it via UIAutomation (reliable, no coordinate guessing) |
+| `click_element` | Find element by text and click — UIAutomation first, OCR fallback for dark themes/web apps |
 | `type_in_element` | Find an input field and type text (ValuePattern, clipboard paste, or click+type fallback) |
 | `interact` | Smart interaction — auto-detects element type and performs the right action |
 | `fill_form` | Fill multiple form fields in one call with JSON field:value pairs |
 | `select_tab` | Select a browser or application tab by text |
+| `click_menu_item` | Navigate menus: click parent, smooth-move to child, click — single call |
+
+### Batch & Composite Actions
+
+| Tool | Description |
+|---|---|
+| `run_sequence` | Execute multiple UI actions in ONE call: click, type, paste, hotkey, wait, focus, OCR click, screenshot |
+| `click_and_type` | Click at position then type text |
+| `focus_and_hotkey` | Click to focus (e.g. iframe) then send keyboard shortcut atomically |
 
 ### Mouse & Keyboard
 
@@ -107,8 +149,10 @@ Or add it manually to your MCP config file:
 |---|---|
 | `mouse_click` | Click at screen coordinates |
 | `mouse_move` | Move cursor to position |
+| `mouse_move_smooth` | Move mouse smoothly (keeps menus/submenus open) |
 | `mouse_drag` | Drag from one position to another |
 | `mouse_scroll` | Scroll the mouse wheel |
+| `mouse_get_position` | Get current cursor position |
 | `keyboard_type` | Type text (supports Unicode) |
 | `keyboard_press` | Press a single key |
 | `keyboard_hotkey` | Press key combinations (Ctrl+C, Alt+Tab, etc.) |
@@ -131,36 +175,65 @@ Or add it manually to your MCP config file:
 |---|---|
 | `screenshot_to_file` | Full screenshot across all monitors |
 | `screenshot_region` | Screenshot a specific screen region |
+| `screenshot_window` | Capture a window via PrintWindow API (works even when obscured) |
 | `get_screen_info` | Get monitor layout (positions, sizes, primary) |
-| `ocr_screen_region` | Capture a region and run Windows OCR — returns text with click coordinates |
-| `ocr_window` | Run OCR on an entire window — reads all visible text with positions |
+| `ocr_screen_region` | Capture a region and run OCR — auto-enhances dark themes |
+| `ocr_window` | Run OCR on an entire window — reads all text with click coordinates |
 | `ocr_find_text` | Search for specific text on screen using OCR — returns click coordinates |
 
 ### Utilities
 
 | Tool | Description |
 |---|---|
-| `click_and_type` | Click at position then type text |
-| `auto_scroll` | Scroll with pauses between batches |
-| `wait_seconds` | Pause between actions |
-| `mouse_move_smooth` | Move mouse smoothly (keeps menus/submenus open) |
 | `set_clipboard` | Set clipboard text without pasting |
 | `paste_text` | Paste large text via clipboard (XML, code, multi-line) |
-| `focus_and_hotkey` | Click to focus (e.g. iframe) then send keyboard shortcut atomically |
+| `auto_scroll` | Scroll with pauses between batches |
+| `wait_seconds` | Pause between actions |
 | `wait_for_element` | Poll for UI element to appear with timeout |
-| `click_menu_item` | Navigate menus: click parent, smooth-move to child, click — single call |
+
+## Embedded AI Instructions
+
+The server sends **tool usage guidelines** automatically on every MCP connection via `ServerInstructions`. This teaches AI clients the optimal workflow without requiring any configuration files:
+
+**Observation Priority:** `ocr_window` > `get_window_details` > `list_windows` > `scan_desktop` > `screenshot_to_file`
+
+**Action Priority:** `click_element` > `click_menu_item` > `run_sequence` > `paste_text` > `mouse_click`
+
+The key insight: **OCR and UIAutomation return exact text and coordinates** — the AI knows exactly what to click. Screenshots require vision processing and guessing. OCR-first workflows are faster, cheaper, and more reliable.
+
+## Window Occlusion Detection
+
+The server uses a **grid-based occlusion analysis** (24px cells) to determine which windows are truly visible:
+
+```
+Chrome (chrome) [71] @ -2060,-1461 3456x1403        ← 100% visible
+VS Code (Code) [45] @ -1500,-800 1200x900           ← 65% visible
+Explorer (explorer) [20] @ -1400,-700 800x600        ← 0% visible [OCCLUDED]
+```
+
+The AI knows which windows it can interact with and which are hidden. Combined with **desktop region detection** (flood-fill to find uncovered screen areas), the AI has a complete spatial understanding of the desktop.
+
+## Dark Theme OCR Enhancement
+
+Many modern apps use dark themes where standard OCR fails. The server automatically detects dark backgrounds and enhances images before OCR:
+
+1. **Sample pixel luminance** across the image
+2. If average luminance < 100 → dark theme detected
+3. **Invert colors** + **boost contrast (1.4x)** — single pass
+4. Run OCR on enhanced image
+
+This works automatically on `ocr_window`, `ocr_screen_region`, `ocr_find_text`, and `click_element`'s OCR fallback.
 
 ## Multi-Monitor Support
 
-Full multi-monitor support out of the box. The server detects all connected displays and works seamlessly across them:
+Full multi-monitor support out of the box with **per-monitor DPI awareness**:
 
 - **Auto-detects all monitors** — positions, sizes, primary screen via `get_screen_info`
-- **Virtual desktop mapping** — coordinates span the full virtual desktop, so the AI can click or screenshot any monitor
-- **Cross-monitor screenshots** — `screenshot_to_file` captures all screens, `screenshot_region` targets any region on any display
-- **Window-aware** — windows on any monitor are detected with correct positions, even on non-primary displays
+- **Virtual desktop mapping** — coordinates span the full virtual desktop, including negative coordinates for left/top monitors
+- **DPI-aware** — correct coordinates on mixed-scaling setups (e.g. 100% on one monitor, 150% on another)
+- **Cross-monitor screenshots** — `screenshot_to_file` captures all screens, `screenshot_region` targets any region
+- **Window-aware** — windows on any monitor are detected with correct positions
 - **Taskbar scanning** — reads both `Shell_TrayWnd` (primary) and `Shell_SecondaryTrayWnd` (secondary monitors)
-
-No configuration needed. Plug in a second monitor and the AI sees it immediately.
 
 ## How UIAutomation Works
 
@@ -172,36 +245,30 @@ Unlike screenshot-based tools that guess what's on screen, this server reads the
 - **Automation ID** (developer-assigned identifier)
 - **Supported patterns** (can it be clicked? typed into? toggled?)
 
-This means the AI can reliably interact with applications without pixel-perfect coordinate matching.
+### UIAutomation + OCR Fallback
+
+`click_element` combines both strategies. UIAutomation first (fast, structured), OCR fallback (universal):
+
+```
+click_element "Save"
+  → UIAutomation: found "Save" button → click via Invoke pattern ✓
+
+click_element "OK"  (dark web dialog)
+  → UIAutomation: not found
+  → OCR: capture window → enhance dark theme → find "OK" text → click center ✓
+```
 
 ### Limitation: Custom-Rendered Apps
 
-Applications that render their own UI canvas (Flutter, Electron with custom rendering, game engines) may expose fewer or no elements to UIAutomation. For these, the server has a built-in fallback: **Windows OCR**.
-
-## Built-in OCR (Windows.Media.Ocr)
-
-When UIAutomation can't see elements (Flutter apps, game UIs, web-rendered menus inside iframes), the server uses Windows 10/11's native OCR engine to read text directly from screenshots:
-
-- **`ocr_screen_region`** — Capture any screen area and extract all visible text with click coordinates
-- **`ocr_window`** — Read all text from a window, even if it's a custom-rendered canvas
-- **`ocr_find_text`** — Search for specific text on screen and get exact coordinates to click it
-
-**Two detection strategies, one server:**
-
-| Strategy | Best for | How it works |
-|---|---|---|
-| UIAutomation | Native apps, browsers, WPF/WinForms | Reads the OS accessibility tree — instant, exact, structured |
-| Windows OCR | Flutter, Electron canvas, games, web menus | Captures pixels and recognizes text — works on anything visible |
-
-The AI automatically picks the right strategy. UIAutomation first (fast, structured), OCR as fallback (universal). Multi-language support included (en, el, de, fr, es, it, etc.).
+Applications that render their own UI canvas (Flutter, Electron with custom rendering, game engines) may expose fewer elements to UIAutomation. The OCR fallback handles these cases automatically.
 
 ## Token-Efficient by Design
 
-Every MCP tool call costs tokens. This server is engineered to minimize token usage so the AI spends less and does more:
+Every MCP tool call costs tokens. This server is engineered to minimize token usage:
 
 ### Structured Data Instead of Screenshots
 
-Most desktop automation tools send full screenshots for every action — each one costs **thousands of tokens** for vision processing. This server returns **compact structured text** instead:
+Most desktop automation tools send full screenshots for every action — each one costs **thousands of tokens**. This server returns **compact structured text**:
 
 ```
 [button] "Save" @ 450,320
@@ -209,51 +276,37 @@ Most desktop automation tools send full screenshots for every action — each on
 [tab-item] "Settings" @ 120,35
 ```
 
-The AI gets exact element positions and types in a few lines of text, not a 1MB image. Screenshots are available when needed but are never the default.
-
-### CacheRequest — Single Cross-Process Call
-
-The scanner uses Windows UIAutomation's `CacheRequest` pattern to batch-fetch all element properties (name, bounds, control type, automation ID, class name) in a **single cross-process call** per window. Without this, each property on each element would be a separate IPC round-trip — hundreds of calls for a single window. With caching, it's one call that returns everything.
-
-### Filtered Element Scanning
-
-Instead of crawling every node in the UI tree (thousands of elements), the scanner uses a pre-built `OrCondition` filter that only matches 14 control types the AI actually cares about: buttons, inputs, text, tabs, checkboxes, links, etc. Decorative containers, panels, and layout elements are skipped entirely — less noise, fewer tokens.
-
-### 30-Second Smart Cache
-
-Scan results are cached for 30 seconds. Multiple tool calls within that window reuse the cached data without re-scanning. Individual windows can be refreshed with `refresh_window` instead of a full `scan_desktop`, saving both time and tokens.
-
-### Compact Output Format
-
-Tool responses use minimal plain-text formatting — no JSON wrappers, no verbose metadata. Element lists show only what the AI needs: `[kind] "text" @ x,y`. Window lists show: `Title (process) [count] @ position`. Every byte of output is a token the AI has to process.
-
-### Kind Filtering & Limits
-
-`get_window_details` supports `kindFilter` (show only buttons, only inputs, etc.) and `limit` (default 30) so the AI can request exactly what it needs. A Chrome window might have 200+ elements — but if the AI only needs input fields, it gets 5 lines instead of 200.
-
 ### Batch Operations
 
-`fill_form` fills multiple form fields in a single tool call instead of one call per field. `scan_desktop` returns screens + windows + elements + taskbar in one response. Fewer round-trips = fewer tokens.
+- `run_sequence` executes multiple actions in one call (click, type, paste, hotkey, wait, focus)
+- `fill_form` fills multiple form fields in a single call
+- `scan_desktop` returns screens + windows + elements + taskbar in one response
+- `click_menu_item` navigates parent > child menus in one call
+
+### Smart Caching
+
+Scan results are cached for 30 seconds. Individual windows can be refreshed with `refresh_window` instead of a full `scan_desktop`. The scanner uses UIAutomation's `CacheRequest` to batch-fetch all properties in a single cross-process call.
 
 ## Project Structure
 
 ```
 DesktopControlMcp/
-├── Program.cs                    # MCP server entry point
+├── Program.cs                    # MCP server entry + DPI awareness + ServerInstructions
 ├── NativeInput.cs                # Low-level mouse/keyboard via SendInput
 ├── Native/
-│   └── Win32.cs                  # P/Invoke: EnumWindows, window management
+│   └── Win32.cs                  # P/Invoke: EnumWindows, PrintWindow, window management
 ├── Models/
-│   └── SceneData.cs              # Data models: windows, elements, bounds
+│   └── SceneData.cs              # Data models: windows (with occlusion), elements, regions
 ├── Services/
-│   ├── DesktopScanner.cs         # Desktop scanning via Win32 + UIAutomation
+│   ├── DesktopScanner.cs         # Desktop scanning + occlusion analysis + region detection
+│   ├── OcrService.cs             # Shared OCR engine with dark theme auto-enhancement
 │   └── UiAutomationHelper.cs     # Element interaction patterns
 └── Tools/
-    ├── VisionTools.cs            # scan, find, click, type, form fill
-    ├── CompositeTools.cs         # navigate, open app, window management
+    ├── VisionTools.cs            # scan, find, click (with OCR fallback), list windows
+    ├── CompositeTools.cs         # run_sequence, click_menu_item, navigate, open app
     ├── MouseTools.cs             # Mouse control
     ├── KeyboardTools.cs          # Keyboard control
-    └── ScreenTools.cs            # Screenshots
+    └── ScreenTools.cs            # Screenshots, OCR tools, PrintWindow capture
 ```
 
 ## Examples
